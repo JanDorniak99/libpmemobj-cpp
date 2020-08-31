@@ -1401,7 +1401,7 @@ template <typename M, typename K, typename>
 std::pair<typename radix_tree<Key, Value, BytesView>::iterator, bool>
 radix_tree<Key, Value, BytesView>::insert_or_assign(const K &k, M &&obj)
 {
-	auto ret = try_emplace(k, std::forward<M>(obj));
+	auto ret = emplace(k, std::forward<M>(obj));
 	if (!ret.second)
 		ret.first.assign_val(std::move(obj));
 	return ret;
