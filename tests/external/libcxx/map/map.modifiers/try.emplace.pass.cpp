@@ -137,7 +137,7 @@ run(pmem::obj::pool<root> &pop)
 		pmem::obj::transaction::run(
 			pop, [&] { robj->s = nvobj::make_persistent<M>(); });
 		auto &m = *robj->s;
-		M::iterator r;
+		// M::iterator r;
 		for (int i = 0; i < 20; i += 2)
 			m.try_emplace(i, Moveable(i, (double)i));
 		UT_ASSERT(m.size() == 10);
@@ -165,7 +165,7 @@ run(pmem::obj::pool<root> &pop)
 	{ // iterator try_emplace(const_iterator hint, key_type&& k, Args&&...
 	  // args);
 		typedef container2 M;
-		M::iterator r;
+		// M::iterator r;
 		pmem::obj::transaction::run(
 			pop, [&] { robj->s2 = nvobj::make_persistent<M>(); });
 		auto &m = *robj->s2;

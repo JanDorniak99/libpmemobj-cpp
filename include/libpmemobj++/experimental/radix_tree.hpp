@@ -164,7 +164,6 @@ public:
 	void insert(std::initializer_list<value_type> il);
 	// insert_return_type insert(node_type&& nh);
 	// iterator insert(const_iterator hint, node_type&& nh);
-<<<<<<< HEAD
 	template <class... Args>
 	std::pair<iterator, bool> try_emplace(key_type &&k, Args &&... args);
 	template <class... Args>
@@ -173,16 +172,6 @@ public:
 	template <class... Args>
 	iterator try_emplace(const_iterator hint, key_type &&k,
 			     Args &&... args);
-=======
-	// template <class... Args>
-	//     pair<iterator, bool> try_emplace(key_type&& k, Args&&... args);
-	// template <class... Args>
-	//     iterator try_emplace(const_iterator hint, const key_type& k,
-	//     Args&&... args);
-	// template <class... Args>
-	//     iterator try_emplace(const_iterator hint, key_type&& k, Args&&...
-	//     args);
->>>>>>> add heterogenerous: insert_or_assign, count
 	template <
 		typename M,
 		typename = typename std::enable_if<
@@ -1307,7 +1296,6 @@ radix_tree<Key, Value, BytesView>::insert(std::initializer_list<value_type> il)
 	insert(il.begin(), il.end());
 }
 
-<<<<<<< HEAD
 /* desc todo */
 template <typename Key, typename Value, typename BytesView>
 template <class... Args>
@@ -1344,8 +1332,6 @@ radix_tree<Key, Value, BytesView>::try_emplace(const_iterator hint,
 	return try_emplace(std::move(k), std::forward<Args>(args)...).first;
 }
 
-=======
->>>>>>> add heterogenerous: insert_or_assign, count
 /* desc */
 template <typename Key, typename Value, typename BytesView>
 template <typename M, typename>
@@ -2737,6 +2723,8 @@ struct bytes_view<obj::experimental::inline_string> {
 	}
 
 	obj::string_view s;
+
+	using is_transparent = void;
 };
 
 template <typename T>
@@ -2768,6 +2756,8 @@ struct bytes_view<T,
 	}
 
 	const T *k;
+
+	using is_transparent = void;
 };
 } /* namespace detail */
 
