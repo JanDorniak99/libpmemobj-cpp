@@ -164,14 +164,14 @@ public:
 	void insert(std::initializer_list<value_type> il);
 	// insert_return_type insert(node_type&& nh);
 	// iterator insert(const_iterator hint, node_type&& nh);
-	// template <class... Args>
-	//     pair<iterator, bool> try_emplace(key_type&& k, Args&&... args);
-	// template <class... Args>
-	//     iterator try_emplace(const_iterator hint, const key_type& k,
-	//     Args&&... args);
-	// template <class... Args>
-	//     iterator try_emplace(const_iterator hint, key_type&& k, Args&&...
-	//     args);
+	template <class... Args>
+	std::pair<iterator, bool> try_emplace(key_type &&k, Args &&... args);
+	template <class... Args>
+	iterator try_emplace(const_iterator hint, const_key_reference k,
+			     Args &&... args);
+	template <class... Args>
+	iterator try_emplace(const_iterator hint, key_type &&k,
+			     Args &&... args);
 	template <
 		typename M,
 		typename = typename std::enable_if<
@@ -1294,6 +1294,42 @@ void
 radix_tree<Key, Value, BytesView>::insert(std::initializer_list<value_type> il)
 {
 	insert(il.begin(), il.end());
+}
+
+/* desc todo */
+template <typename Key, typename Value, typename BytesView>
+template <class... Args>
+std::pair<typename radix_tree<Key, Value, BytesView>::iterator, bool>
+radix_tree<Key, Value, BytesView>::try_emplace(key_type &&k, Args &&... args)
+{
+	return internal_emplace(k, [&](tagged_node_ptr parent) {
+		size_++;
+		return leaf::make(parent, std::move(k),
+				  std::forward<Args>(args)...);
+	});
+}
+
+/* desc todo */
+/* XXX: use hint */
+template <typename Key, typename Value, typename BytesView>
+template <class... Args>
+typename radix_tree<Key, Value, BytesView>::iterator
+radix_tree<Key, Value, BytesView>::try_emplace(const_iterator hint,
+					       const_key_reference k,
+					       Args &&... args)
+{
+	return try_emplace(k, std::forward<Args>(args)...).first;
+}
+
+/* desc todo */
+/* XXX: use hint */
+template <typename Key, typename Value, typename BytesView>
+template <class... Args>
+typename radix_tree<Key, Value, BytesView>::iterator
+radix_tree<Key, Value, BytesView>::try_emplace(const_iterator hint,
+					       key_type &&k, Args &&... args)
+{
+	return try_emplace(std::move(k), std::forward<Args>(args)...).first;
 }
 
 /* desc */
