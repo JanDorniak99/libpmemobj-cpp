@@ -137,27 +137,26 @@ run(pmem::obj::pool<root> &pop)
 		pmem::obj::transaction::run(
 			pop, [&] { robj->s = nvobj::make_persistent<M>(); });
 		auto &m = *robj->s;
-		// M::iterator r;
+		M::iterator r;
 		for (int i = 0; i < 20; i += 2)
 			m.try_emplace(i, Moveable(i, (double)i));
 		UT_ASSERT(m.size() == 10);
-		/* XXX: emplace_hint */
-		/*M::const_iterator it = m.find(2);
+		M::const_iterator it = m.find(2);
 
 		Moveable mv1(3, 3.0);
 		for (int i = 0; i < 20; i += 2) {
-			r = m.emplace_hint(it, i, std::move(mv1));
+			r = m.try_emplace(it, i, std::move(mv1));
 			UT_ASSERT(m.size() == 10);
 			UT_ASSERT(!mv1.moved());	 // was not moved from
 			UT_ASSERT(r->MAP_KEY == i);	 // key
 			UT_ASSERT(r->MAP_VALUE.get() == i); // value
 		}
 
-		r = m.emplace_hint(it, 3, std::move(mv1));
+		r = m.try_emplace(it, 3, std::move(mv1));
 		UT_ASSERT(m.size() == 11);
 		UT_ASSERT(mv1.moved());		 // was moved from
 		UT_ASSERT(r->MAP_KEY == 3);	 // key
-		UT_ASSERT(r->MAP_VALUE.get() == 3); // value*/
+		UT_ASSERT(r->MAP_VALUE.get() == 3); // value
 		pmem::obj::transaction::run(
 			pop, [&] { nvobj::delete_persistent<M>(robj->s); });
 	}
@@ -165,7 +164,7 @@ run(pmem::obj::pool<root> &pop)
 	{ // iterator try_emplace(const_iterator hint, key_type&& k, Args&&...
 	  // args);
 		typedef container2 M;
-		// M::iterator r;
+		M::iterator r;
 		pmem::obj::transaction::run(
 			pop, [&] { robj->s2 = nvobj::make_persistent<M>(); });
 		auto &m = *robj->s2;
@@ -173,24 +172,23 @@ run(pmem::obj::pool<root> &pop)
 			m.emplace(Moveable(i, (double)i),
 				  Moveable(i + 1, (double)i + 1));
 		UT_ASSERT(m.size() == 10);
-		/* XXX: emplace_hint */
-		/*M::const_iterator it = std::next(m.cbegin());
+		M::const_iterator it = std::next(m.cbegin());
 
 		Moveable mvkey1(2, 2.0);
 		Moveable mv1(4, 4.0);
-		r = m.emplace_hint(it, std::move(mvkey1), std::move(mv1));
+		r = m.try_emplace(it, std::move(mvkey1), std::move(mv1));
 		UT_ASSERT(m.size() == 10);
 		UT_ASSERT(!mv1.moved());       // was not moved from
 		UT_ASSERT(!mvkey1.moved());    // was not moved from
 		UT_ASSERT(r->MAP_KEY == mvkey1); // key
 
 		Moveable mvkey2(3, 3.0);
-		r = m.emplace_hint(it, std::move(mvkey2), std::move(mv1));
+		r = m.try_emplace(it, std::move(mvkey2), std::move(mv1));
 		UT_ASSERT(m.size() == 11);
 		UT_ASSERT(mv1.moved());		 // was moved from
 		UT_ASSERT(mvkey2.moved());	 // was moved from
 		UT_ASSERT(r->MAP_KEY.get() == 3);	 // key
-		UT_ASSERT(r->MAP_VALUE.get() == 4); // value*/
+		UT_ASSERT(r->MAP_VALUE.get() == 4); // value
 		pmem::obj::transaction::run(
 			pop, [&] { nvobj::delete_persistent<M>(robj->s2); });
 	}

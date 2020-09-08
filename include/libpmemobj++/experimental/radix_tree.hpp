@@ -172,6 +172,11 @@ public:
 	template <class... Args>
 	iterator try_emplace(const_iterator hint, key_type &&k,
 			     Args &&... args);
+	template <
+		typename K, class... Args,
+		typename = typename std::enable_if<
+			detail::has_is_transparent<BytesView>::value, K>::type>
+	std::pair<iterator, bool> try_emplace(K &&k, Args &&... args);
 
 	template <typename M>
 	std::pair<iterator, bool> insert_or_assign(const_key_reference k,
@@ -1523,6 +1528,19 @@ radix_tree<Key, Value, BytesView>::try_emplace(const_iterator hint,
 					       Args &&... args)
 {
 	return try_emplace(k, std::forward<Args>(args)...).first;
+}
+
+/* desc */
+template <typename Key, typename Value, typename BytesView>
+template <typename K, class... Args, typename>
+std::pair<typename radix_tree<Key, Value, BytesView>::iterator, bool>
+radix_tree<Key, Value, BytesView>::try_emplace(K &&k, Args &&... args)
+{
+	return internal_emplace(k, [&](tagged_node_ptr parent) {
+		size_++;
+		return leaf::make(parent, std::move(k),
+				  std::forward<Args>(args)...);
+	});
 }
 
 /* XXX: use hint */
