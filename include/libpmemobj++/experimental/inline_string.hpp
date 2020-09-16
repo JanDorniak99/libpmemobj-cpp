@@ -14,6 +14,7 @@
 #include <libpmemobj++/string_view.hpp>
 #include <libpmemobj++/transaction.hpp>
 
+#include <iostream>
 #include <string>
 
 namespace pmem
@@ -97,9 +98,14 @@ basic_inline_string<CharT, Traits>::basic_inline_string(
 	if (nullptr == pmemobj_pool_by_ptr(this))
 		throw pmem::pool_error("Invalid pool handle.");
 
+	std::cout << "size: " << v.size() << std::endl;
+	std::cout << "data: " << v.data() << std::endl;
+
 	std::copy(v.data(), v.data() + static_cast<ptrdiff_t>(size_), data());
 
 	data()[static_cast<ptrdiff_t>(size_)] = '\0';
+
+	std::cout << "this adres cosntructor:" << this << std::endl;
 }
 
 /**
