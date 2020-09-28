@@ -787,7 +787,7 @@ radix_tree<Key, Value, BytesView>::operator=(const radix_tree &other)
 		transaction::run(pop, [&] {
 			clear();
 
-			root = nullptr;
+			this->root = nullptr;
 			size_ = 0;
 
 			for (auto it = other.cbegin(); it != other.cend(); it++)
@@ -818,7 +818,7 @@ radix_tree<Key, Value, BytesView>::operator=(radix_tree &&other)
 		transaction::run(pop, [&] {
 			clear();
 
-			root = other.root;
+			this->root = other.root;
 			size_ = other.size_;
 			other.root = nullptr;
 			other.size_ = 0;
@@ -850,7 +850,7 @@ radix_tree<Key, Value, BytesView>::operator=(
 	transaction::run(pop, [&] {
 		clear();
 
-		root = nullptr;
+		this->root = nullptr;
 		size_ = 0;
 
 		for (auto it = ilist.begin(); it != ilist.end(); it++)
