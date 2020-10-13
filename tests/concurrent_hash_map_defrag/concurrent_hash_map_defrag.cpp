@@ -174,20 +174,20 @@ erase_defrag_concurrent_test(nvobj::pool<root> &pop)
 
 	map->runtime_initialize();
 
-	pmem::obj::persistent_ptr<persistent_map_type::value_type>
-		ptr[NUMBER_ITEMS_INSERT];
+	std::array<pmem::obj::persistent_ptr<persistent_map_type::value_type>,
+		   NUMBER_ITEMS_INSERT>
+		ptr;
 
 	pmem::obj::transaction::run(pop, [&] {
 		std::string str = " ";
-		for (int i = 0; i < static_cast<int>(NUMBER_ITEMS_INSERT);
-		     i++) {
+		for (size_t i = 0; i < NUMBER_ITEMS_INSERT; i++) {
 			ptr[i] = pmem::obj::make_persistent<
 				persistent_map_type::value_type>(str, str);
 			str.append(std::to_string(i));
 		}
 	});
 
-	for (int i = 0; i < static_cast<int>(NUMBER_ITEMS_INSERT); ++i) {
+	for (size_t i = 0; i < NUMBER_ITEMS_INSERT; ++i) {
 		map->insert(*(ptr[i]));
 	}
 
@@ -195,17 +195,34 @@ erase_defrag_concurrent_test(nvobj::pool<root> &pop)
 	size_t allocated = pop.ctl_get<size_t>("stats.heap.run_allocated");
 	float r1 = (float)active / (float)allocated;
 
+	std::vector<persistent_map_type::pointer> to_erase[3];
+
+	size_t cnt = 0;
+	for (auto &v : *map) {
+		if (cnt % 10 == 0 || cnt % 11 == 0 || cnt % 12 == 0) {
+			to_erase[cnt % 10].push_back(&v);
+			auto it = std::find_if(
+				ptr.begin(), ptr.end(), [&](auto &val) {
+					return val->first.compare(v.first) == 0;
+				});
+			(*it)->second.assign("");
+			std::cerr << "aaaaa" << std::endl;
+		}
+		cnt++;
+	}
+
 	std::vector<std::thread> threads;
-	for (int i = 0; i < 3; i++) {
+	for (int i = 0; i < 2; i++) {
 		threads.emplace_back([&]() {
-			for (int j = 0;
-			     j < static_cast<int>(NUMBER_ITEMS_INSERT); j++) {
-				if (j % i + 10 == 0) {
-					map->erase(ptr[j]->first);
-				}
-			}
+			for (auto &v : to_erase[i])
+				map->erase(v->first);
 		});
 	}
+	threads.emplace_back([&]() {
+		for (auto rit = to_erase[2].rbegin(); rit != to_erase[2].rend();
+		     ++rit)
+			map->erase((*rit)->first);
+	});
 
 	struct pobj_defrag_result result;
 	threads.emplace_back([&]() { result = map->defragment(); });
@@ -226,8 +243,8 @@ erase_defrag_concurrent_test(nvobj::pool<root> &pop)
 
 	UT_ASSERT(r2 < r1);
 
-	for (int i = 0; i < static_cast<int>(NUMBER_ITEMS_INSERT); ++i) {
-		if (i % 10 == 0 || i % 11 == 0 || i % 12 == 0)
+	for (size_t i = 0; i < NUMBER_ITEMS_INSERT; ++i) {
+		if (ptr[i]->second == "")
 			continue;
 		persistent_map_type::accessor acc;
 		bool res = map->find(acc, ptr[i]->first);
@@ -241,8 +258,7 @@ erase_defrag_concurrent_test(nvobj::pool<root> &pop)
 	}
 
 	pmem::obj::transaction::run(pop, [&] {
-		for (int i = 0; i < static_cast<int>(NUMBER_ITEMS_INSERT);
-		     i++) {
+		for (size_t i = 0; i < NUMBER_ITEMS_INSERT; i++) {
 			pmem::obj::delete_persistent<
 				persistent_map_type::value_type>(ptr[i]);
 		}
