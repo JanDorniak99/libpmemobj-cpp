@@ -159,6 +159,96 @@ insert_defrag_lookup_test(nvobj::pool<root> &pop)
 				persistent_map_type::value_type>(ptr[i]);
 		}
 	});
+
+	map->clear();
+}
+
+void
+erase_defrag_concurrent_test(nvobj::pool<root> &pop)
+{
+	const size_t NUMBER_ITEMS_INSERT = 10000;
+
+	auto map = pop.root()->cons;
+
+	UT_ASSERT(map != nullptr);
+
+	map->runtime_initialize();
+
+	pmem::obj::persistent_ptr<persistent_map_type::value_type>
+		ptr[NUMBER_ITEMS_INSERT];
+
+	pmem::obj::transaction::run(pop, [&] {
+		std::string str = " ";
+		for (int i = 0; i < static_cast<int>(NUMBER_ITEMS_INSERT);
+		     i++) {
+			ptr[i] = pmem::obj::make_persistent<
+				persistent_map_type::value_type>(str, str);
+			str.append(std::to_string(i));
+		}
+	});
+
+	for (int i = 0; i < static_cast<int>(NUMBER_ITEMS_INSERT); ++i) {
+		map->insert(*(ptr[i]));
+	}
+
+	size_t active = pop.ctl_get<size_t>("stats.heap.run_active");
+	size_t allocated = pop.ctl_get<size_t>("stats.heap.run_allocated");
+	float r1 = (float)active / (float)allocated;
+
+	std::vector<std::thread> threads;
+	for (int i = 0; i < 3; i++) {
+		threads.emplace_back([&]() {
+			for (int j = 0;
+			     j < static_cast<int>(NUMBER_ITEMS_INSERT); j++) {
+				if (j % i + 10 == 0) {
+					map->erase(ptr[j]->first);
+				}
+			}
+		});
+	}
+
+	struct pobj_defrag_result result;
+	threads.emplace_back([&]() { result = map->defragment(); });
+
+	for (auto &thread : threads)
+		thread.join();
+
+	/* this is to trigger global recycling */
+	pop.defrag(NULL, 0);
+
+	UT_ASSERT(result.total > 0);
+	UT_ASSERT(result.relocated > 0);
+	UT_ASSERT(result.total >= result.relocated);
+
+	active = pop.ctl_get<size_t>("stats.heap.run_active");
+	allocated = pop.ctl_get<size_t>("stats.heap.run_allocated");
+	float r2 = (float)active / (float)allocated;
+
+	UT_ASSERT(r2 < r1);
+
+	for (int i = 0; i < static_cast<int>(NUMBER_ITEMS_INSERT); ++i) {
+		if (i % 10 == 0 || i % 11 == 0 || i % 12 == 0)
+			continue;
+		persistent_map_type::accessor acc;
+		bool res = map->find(acc, ptr[i]->first);
+
+		if (res) {
+			UT_ASSERT(acc->first == (ptr[i])->first);
+			UT_ASSERT(acc->second == (ptr[i])->second);
+		} else {
+			UT_ASSERT(false);
+		}
+	}
+
+	pmem::obj::transaction::run(pop, [&] {
+		for (int i = 0; i < static_cast<int>(NUMBER_ITEMS_INSERT);
+		     i++) {
+			pmem::obj::delete_persistent<
+				persistent_map_type::value_type>(ptr[i]);
+		}
+	});
+
+	map->clear();
 }
 }
 
@@ -185,6 +275,7 @@ test(int argc, char *argv[])
 	}
 
 	insert_defrag_lookup_test(pop);
+	erase_defrag_concurrent_test(pop);
 
 	pop.close();
 }
