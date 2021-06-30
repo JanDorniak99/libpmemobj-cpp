@@ -19,7 +19,9 @@ test_iterators(nvobj::pool<root> &pop)
 
 	nvobj::transaction::run(pop, [&] {
 		r->radix_int = nvobj::make_persistent<container_int>();
+		std::cerr << "xxx" << std::endl;
 		r->radix_int->try_emplace("", 0U);
+		std::cerr << "yyy" << std::endl;
 		r->radix_int->try_emplace("ab", 1U);
 		r->radix_int->try_emplace("ba", 2U);
 		r->radix_int->try_emplace("a", 3U);
@@ -126,14 +128,18 @@ test_ref_stability(nvobj::pool<root> &pop)
 {
 	auto r = pop.root();
 
+	std::cerr << "abc" << std::endl;
 	nvobj::transaction::run(pop, [&] {
 		r->radix_str = nvobj::make_persistent<container_string>();
 		r->radix_int = nvobj::make_persistent<container_int>();
 	});
+	std::cerr << "abc" << std::endl;
 
 	{
-		auto &ab_ref = *r->radix_str->emplace("ab", "ab").first;
+		auto &ab_ref = *r->radix_str->try_emplace("ab", "ab").first;
+		std::cerr << "emplace ab" << std::endl;
 		auto &a_ref = *r->radix_str->emplace("a", "a").first;
+		std::cerr << "emplace a" << std::endl;
 		auto &acxxxy_ref =
 			*r->radix_str->emplace("acxxxy", "acxxxy").first;
 		auto &acxxxz_ref =
@@ -959,8 +965,11 @@ test(int argc, char *argv[])
 	generator = std::mt19937_64(seed);
 
 	test_ref_stability(pop);
+	std::cerr << "ref_stab" << std::endl;
 	test_iterators(pop);
+	std::cerr << "iterators" << std::endl;
 	test_find(pop);
+	std::cerr << "iterators" << std::endl;
 	test_erase(pop);
 	test_binary_keys(pop);
 	test_pre_post_fixes(pop);

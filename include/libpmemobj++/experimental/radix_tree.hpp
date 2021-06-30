@@ -322,9 +322,20 @@ private:
 	v<uint64_t> mt;
 	vector<pointer_type> garbage;
 
+	static constexpr size_t TX_LOG_SIZE = 2048;
+	vector<char> tx_log;
+	v<size_t> log_offset;
+
 	/* helper functions */
 	template <typename K, typename F, class... Args>
 	std::pair<iterator, bool> internal_emplace(const K &, F &&);
+	template <typename K, typename F, class... Args>
+	std::pair<size_t,
+		  std::function<std::pair<
+			  typename radix_tree<Key, Value, BytesView>::iterator,
+			  bool>()>>
+	internal_get_emplace_callback(const K &k, F &&make_leaf,
+				      pool_base &pop);
 	template <typename K>
 	leaf *internal_find(const K &k) const;
 
@@ -662,6 +673,8 @@ radix_tree<Key, Value, BytesView>::radix_tree() : root(nullptr), size_(0)
 {
 	check_pmem();
 	check_tx_stage_work();
+
+	tx_log.resize(TX_LOG_SIZE);
 }
 
 /**
@@ -691,6 +704,8 @@ radix_tree<Key, Value, BytesView>::radix_tree(InputIt first, InputIt last)
 	check_pmem();
 	check_tx_stage_work();
 
+	tx_log.resize(TX_LOG_SIZE);
+
 	for (auto it = first; it != last; it++)
 		emplace(*it);
 }
@@ -717,6 +732,8 @@ radix_tree<Key, Value, BytesView>::radix_tree(const radix_tree &m)
 	check_pmem();
 	check_tx_stage_work();
 
+	tx_log.resize(TX_LOG_SIZE);
+
 	for (auto it = m.cbegin(); it != m.cend(); it++)
 		emplace(*it);
 }
@@ -738,6 +755,8 @@ radix_tree<Key, Value, BytesView>::radix_tree(radix_tree &&m)
 {
 	check_pmem();
 	check_tx_stage_work();
+
+	tx_log.resize(TX_LOG_SIZE);
 
 	root.store_with_snapshot_release(m.root.load_acquire());
 	size_ = m.size_;
@@ -1213,25 +1232,86 @@ template <typename K, typename F, class... Args>
 std::pair<typename radix_tree<Key, Value, BytesView>::iterator, bool>
 radix_tree<Key, Value, BytesView>::internal_emplace(const K &k, F &&make_leaf)
 {
-	auto key = bytes_view(k);
 	auto pop = pool_base(pmemobj_pool_by_ptr(this));
+	auto res = internal_get_emplace_callback(k, make_leaf, pop);
+	auto snapshots = res.first;
+	auto callback = res.second;
+
+	if (snapshots == 0)
+		return callback();
+
+	/* additional snapshot inside make_leaf */
+	snapshots++;
+
+	std::vector<size_t> sizes(snapshots, sizeof(pointer_type));
+	auto log_size =
+		pmemobj_tx_log_snapshots_max_size(sizes.data(), sizes.size());
+
+	std::pair<typename radix_tree<Key, Value, BytesView>::iterator, bool>
+		ret;
+	flat_transaction::run(pop, [&] {
+		if (log_offset + log_size < TX_LOG_SIZE)
+			pmemobj_tx_log_append_buffer(
+				TX_LOG_TYPE_SNAPSHOT,
+				reinterpret_cast<void *>(
+					tx_log.data() +
+					static_cast<long int>(log_offset)),
+				log_size);
+
+		ret = callback();
+
+		log_offset += log_size;
+
+		flat_transaction::register_callback(
+			flat_transaction::stage::finally,
+			[&] { log_offset = 0; });
+	});
+	return ret;
+}
+
+template <typename Key, typename Value, typename BytesView>
+template <typename K, typename F, class... Args>
+std::pair<
+	size_t,
+	std::function<std::pair<
+		typename radix_tree<Key, Value, BytesView>::iterator, bool>()>>
+radix_tree<Key, Value, BytesView>::internal_get_emplace_callback(const K &k,
+								 F &&make_leaf,
+								 pool_base &pop)
+{
+	std::function<std::pair<
+		typename radix_tree<Key, Value, BytesView>::iterator, bool>()>
+		callback;
+	size_t snapshots;
+
+	auto key = bytes_view(k);
 
 	auto r = root.load_acquire();
 	if (!r) {
-		pointer_type leaf;
-		flat_transaction::run(pop, [&] {
-			leaf = make_leaf(nullptr);
-			this->root.store_with_snapshot_release(leaf);
-		});
-		return {iterator(get_leaf(leaf), this), true};
+		snapshots = 1;
+		callback = [=, &pop]()
+			-> std::pair<typename radix_tree<Key, Value,
+							 BytesView>::iterator,
+				     bool>
+		{
+			pointer_type leaf;
+			flat_transaction::run(pop, [&] {
+				leaf = make_leaf(nullptr);
+
+				this->root.store_with_snapshot_release(leaf);
+			});
+			return {iterator(get_leaf(leaf), this), true};
+		};
+		return {snapshots, callback};
 	}
 
 	/*
 	 * Need to descend the tree twice. First to find a leaf that
-	 * represents a subtree that shares a common prefix with the key.
-	 * This is needed to find out the actual labels between nodes (they
-	 * are not known due to a possible path compression). Second time to
-	 * find the place for the new element.
+	 * represents a subtree that shares a common prefix with the
+	 * key. This is needed to find out the actual labels between
+	 * nodes (they are not known due to a possible path
+	 * compression). Second time to find the place for the new
+	 * element.
 	 */
 	auto ret = descend(r, key);
 	auto leaf = ret.first;
@@ -1244,8 +1324,17 @@ radix_tree<Key, Value, BytesView>::internal_emplace(const K &k, F &&make_leaf)
 	auto sh = bit_diff(leaf_key, key, diff);
 
 	/* Key exists. */
-	if (diff == key.size() && leaf_key.size() == key.size())
-		return {iterator(leaf, this), false};
+	if (diff == key.size() && leaf_key.size() == key.size()) {
+		snapshots = 0;
+		callback = [=
+		]() -> std::pair<typename radix_tree<Key, Value,
+						     BytesView>::iterator,
+				 bool>
+		{
+			return {iterator(leaf, this), false};
+		};
+		return {snapshots, callback};
+	};
 
 	/* Descend the tree again by following the path. */
 	auto node_d = follow_path(path, diff, sh);
@@ -1254,106 +1343,168 @@ radix_tree<Key, Value, BytesView>::internal_emplace(const K &k, F &&make_leaf)
 	auto n = node_d.node;
 
 	/*
-	 * If the divergence point is at same nib as an existing node, and
-	 * the subtree there is empty, just place our leaf there and we're
-	 * done.  Obviously this can't happen if SLICE == 1.
+	 * If the divergence point is at same nib as an existing node,
+	 * and the subtree there is empty, just place our leaf there and
+	 * we're done.  Obviously this can't happen if SLICE == 1.
 	 */
 	if (!n) {
 		assert(diff < (std::min)(leaf_key.size(), key.size()));
 
-		flat_transaction::run(pop, [&] {
-			slot->store_with_snapshot_release(make_leaf(prev));
-		});
-		return {iterator(get_leaf(slot->load_acquire()), this), true};
+		snapshots = 1;
+		callback = [=, &pop]()
+			-> std::pair<typename radix_tree<Key, Value,
+							 BytesView>::iterator,
+				     bool>
+		{
+			flat_transaction::run(pop, [&] {
+				auto leaf = make_leaf(prev);
+
+				slot->store_with_snapshot_release(leaf);
+			});
+			return {iterator(get_leaf(slot->load_acquire()), this),
+				true};
+		};
+		return {snapshots, callback};
 	}
 
-	/* New key is a prefix of the leaf key or they are equal. We need to add
-	 * leaf ptr to internal node. */
+	/* New key is a prefix of the leaf key or they are equal. We
+	 * need to add leaf ptr to internal node. */
 	if (diff == key.size()) {
 		if (!is_leaf(n) && path_length_equal(key.size(), n)) {
 			assert(!n->embedded_entry.load_acquire());
 
-			flat_transaction::run(pop, [&] {
-				n->embedded_entry.store_with_snapshot_release(
-					make_leaf(n));
-			});
+			snapshots = 1;
+			callback = [=, &pop]()
+				-> std::pair<typename radix_tree<
+						     Key, Value,
+						     BytesView>::iterator,
+					     bool>
+			{
+				flat_transaction::run(pop, [&] {
+					auto leaf = make_leaf(n);
 
-			return {iterator(get_leaf(n->embedded_entry
-							  .load_acquire()),
-					 this),
-				true};
+					n->embedded_entry
+						.store_with_snapshot_release(
+							leaf);
+				});
+
+				return {iterator(
+						get_leaf(
+							n->embedded_entry
+								.load_acquire()),
+						this),
+					true};
+			};
+			return {snapshots, callback};
 		}
 
 		/* Path length from root to n is longer than key.size().
 		 * We have to allocate new internal node above n. */
-		pointer_type node;
-		flat_transaction::run(pop, [&] {
-			node = make_persistent<radix_tree::node>(
-				parent_ref(n).load_acquire(), diff,
-				bitn_t(FIRST_NIB));
-			node->embedded_entry.store_with_snapshot_release(
-				make_leaf(node));
-			node->child[slice_index(leaf_key[diff],
-						bitn_t(FIRST_NIB))]
-				.store_with_snapshot_release(n);
+		snapshots = 4;
+		callback = [=, &pop]()
+			-> std::pair<typename radix_tree<Key, Value,
+							 BytesView>::iterator,
+				     bool>
+		{
+			pointer_type node;
+			flat_transaction::run(pop, [&] {
+				node = make_persistent<radix_tree::node>(
+					parent_ref(n).load_acquire(), diff,
+					bitn_t(FIRST_NIB));
+				auto leaf = make_leaf(node);
 
-			parent_ref(n).store_with_snapshot_release(node);
-			slot->store_with_snapshot_release(node);
-		});
+				node->embedded_entry
+					.store_with_snapshot_release(leaf);
+				node->child[slice_index(leaf_key[diff],
+							bitn_t(FIRST_NIB))]
+					.store_with_snapshot_release(n);
 
-		return {iterator(get_leaf(node->embedded_entry.load_acquire()),
-				 this),
-			true};
+				parent_ref(n).store_with_snapshot_release(node);
+				slot->store_with_snapshot_release(node);
+			});
+
+			return {iterator(get_leaf(node->embedded_entry
+							  .load_acquire()),
+					 this),
+				true};
+		};
+		return {snapshots, callback};
 	}
 
 	if (diff == leaf_key.size()) {
-		/* Leaf key is a prefix of the new key. We need to convert leaf
-		 * to a node. */
+		/* Leaf key is a prefix of the new key. We need to
+		 * convert leaf to a node. */
+		snapshots = 4;
+		callback = [=, &pop]()
+			-> std::pair<typename radix_tree<Key, Value,
+							 BytesView>::iterator,
+				     bool>
+		{
+			pointer_type node;
+			flat_transaction::run(pop, [&] {
+				/* We have to add new node at the edge
+				 * from parent to n
+				 */
+				node = make_persistent<radix_tree::node>(
+					parent_ref(n).load_acquire(), diff,
+					bitn_t(FIRST_NIB));
+				auto leaf = make_leaf(node);
+
+				node->embedded_entry
+					.store_with_snapshot_release(n);
+				node->child[slice_index(key[diff],
+							bitn_t(FIRST_NIB))]
+					.store_with_snapshot_release(leaf);
+
+				parent_ref(n).store_with_snapshot_release(node);
+				slot->store_with_snapshot_release(node);
+			});
+
+			return {iterator(
+					get_leaf(
+						node
+							->child[slice_index(
+								key[diff],
+								bitn_t(FIRST_NIB))]
+							.load_acquire()),
+					this),
+				true};
+		};
+		return {snapshots, callback};
+	}
+
+	/* There is already a subtree at the divergence point
+	 * (slice_index(key[diff], sh)). This means that a tree is
+	 * vertically compressed and we have to "break" this compression
+	 * and add a new node. */
+	snapshots = 4;
+	callback = [=, &pop]()
+		-> std::pair<
+			typename radix_tree<Key, Value, BytesView>::iterator,
+			bool>
+	{
 		pointer_type node;
 		flat_transaction::run(pop, [&] {
-			/* We have to add new node at the edge from parent to n
-			 */
 			node = make_persistent<radix_tree::node>(
-				parent_ref(n).load_acquire(), diff,
-				bitn_t(FIRST_NIB));
-			node->embedded_entry.store_with_snapshot_release(n);
-			node->child[slice_index(key[diff], bitn_t(FIRST_NIB))]
-				.store_with_snapshot_release(make_leaf(node));
+				parent_ref(n).load_acquire(), diff, sh);
+			auto leaf = make_leaf(node);
+
+			node->child[slice_index(leaf_key[diff], sh)]
+				.store_with_snapshot_release(n);
+			node->child[slice_index(key[diff], sh)]
+				.store_with_snapshot_release(leaf);
 
 			parent_ref(n).store_with_snapshot_release(node);
 			slot->store_with_snapshot_release(node);
 		});
 
 		return {iterator(
-				get_leaf(node->child[slice_index(
-							     key[diff],
-							     bitn_t(FIRST_NIB))]
+				get_leaf(node->child[slice_index(key[diff], sh)]
 						 .load_acquire()),
 				this),
 			true};
-	}
-
-	/* There is already a subtree at the divergence point
-	 * (slice_index(key[diff], sh)). This means that a tree is vertically
-	 * compressed and we have to "break" this compression and add a new
-	 * node. */
-	pointer_type node;
-	flat_transaction::run(pop, [&] {
-		node = make_persistent<radix_tree::node>(
-			parent_ref(n).load_acquire(), diff, sh);
-		node->child[slice_index(leaf_key[diff], sh)]
-			.store_with_snapshot_release(n);
-		node->child[slice_index(key[diff], sh)]
-			.store_with_snapshot_release(make_leaf(node));
-
-		parent_ref(n).store_with_snapshot_release(node);
-		slot->store_with_snapshot_release(node);
-	});
-
-	return {iterator(get_leaf(node->child[slice_index(key[diff], sh)]
-					  .load_acquire()),
-			 this),
-		true};
+	};
+	return {snapshots, callback};
 }
 
 /**
